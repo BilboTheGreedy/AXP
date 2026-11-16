@@ -164,7 +164,7 @@ local BLIZZARD = { "MainMenuExpBar", "ReputationWatchBar", "MainStatusTrackingBa
 local hidden = false
 
 local function blizzard()
-	local want = ns.db.hideBlizzard and true or false
+	local want = ns.db.hideDefault and true or false
 	if want == hidden then return end
 	hidden = want
 	for _, name in ipairs(BLIZZARD) do

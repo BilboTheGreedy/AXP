@@ -9,13 +9,14 @@ local defaults = {
 	rep = true,
 	autoRep = true,
 	toast = true,
-	hideBlizzard = false,
+	hideDefault = true,
 }
 
-ACore.New(ADDON, ns, { db = "AXPDB", defaults = defaults })
+ACore.New(ADDON, ns, { db = "AXPDB", defaults = defaults, profile = true })
 
 ACore.Register({
 	name = "AXP",
+	options = function() return ns.Options() end,
 	title = "AXP",
 	slash = "/axp",
 	desc = "experience and reputation bars",
@@ -43,7 +44,7 @@ function ns.Options()
 		UI.Check(db, "rep", "Reputation bar", changed),
 		UI.Check(db, "autoRep", "Follow the faction I last gained reputation with"),
 		UI.Check(db, "toast", "Level up message", changed),
-		UI.Check(db, "hideBlizzard", "Hide the default bars", changed),
+		UI.Check(db, "hideDefault", "Hide the default bars", changed),
 		UI.Check(db.bar, "locked", "Lock position"),
 		{ text = "Reset session", func = function() ns.Track.Reset() end },
 		{ text = "Text", title = true },
