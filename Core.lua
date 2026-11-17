@@ -10,6 +10,8 @@ local defaults = {
 	autoRep = true,
 	toast = true,
 	hideDefault = true,
+	ticks = true,
+	hover = false,
 }
 
 ACore.New(ADDON, ns, { db = "AXPDB", defaults = defaults, profile = true })
@@ -44,7 +46,9 @@ function ns.Options()
 		UI.Check(db, "rep", "Reputation bar", changed),
 		UI.Check(db, "autoRep", "Follow the faction I last gained reputation with"),
 		UI.Check(db, "toast", "Level up message", changed),
-		UI.Check(db, "hideDefault", "Hide the default bars", changed),
+		UI.Check(db, "hideDefault", "Hide the default experience and reputation bars", changed),
+		UI.Check(db, "ticks", "Tick marks on the experience bar", changed),
+		UI.Check(db, "hover", "Show text only on mouseover", changed),
 		UI.Check(db.bar, "locked", "Lock position"),
 		{ text = "Reset session", func = function() ns.Track.Reset() end },
 		{ text = "Text", title = true },
@@ -97,9 +101,11 @@ SlashCmdList["AXP"] = function(msg)
 	elseif cmd == "session" then
 		ns.Track.Reset()
 		ns.Print("Session reset")
+	elseif cmd == "share" then
+		ns.Bars.Share()
 	elseif cmd == "report" then
 		for _, line in ipairs(ns.Track.Summary()) do ns.Print(line[1] .. ": " .. line[2]) end
 	else
-		ns.Print("/axp, /axp lock, /axp unlock, /axp reset, /axp session, /axp report")
+		ns.Print("/axp, /axp lock, /axp unlock, /axp reset, /axp session, /axp report, /axp share")
 	end
 end

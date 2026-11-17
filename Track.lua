@@ -8,11 +8,13 @@ local function num(v)
 	return v
 end
 
+local function pass(ok, ...)
+	if ok then return ... end
+end
+
 local function call(fn, ...)
 	if not fn then return nil end
-	local r = { pcall(fn, ...) }
-	if not r[1] then return nil end
-	return unpack(r, 2)
+	return pass(pcall(fn, ...))
 end
 
 local function now()
@@ -30,6 +32,8 @@ end
 fresh()
 
 local lastXP, lastMax, lastMoney
+local looseXP, looseAt, killAt, questAt
+local standings
 
 function Track.MaxLevel()
 	local max = num(call(GetMaxPlayerLevel))
@@ -89,7 +93,18 @@ local function xpChanged()
 	if lastXP and lastMax then
 		local delta = info.xp - lastXP
 		if info.max ~= lastMax or delta < 0 then delta = (lastMax - lastXP) + info.xp end
-		if delta > 0 then s.xp = s.xp + delta end
+		if delta > 0 then
+			s.xp = s.xp + delta
+			local t = now()
+			if questAt and t - questAt <= 2 then
+				questAt = nil
+			elseif killAt and t - killAt <= 2 then
+				killAt = nil
+				push(s.killXP, delta, 12)
+			else
+				looseXP, looseAt = delta, t
+			end
+		end
 	end
 	lastXP, lastMax = info.xp, info.max
 	ns:Fire("CHANGED")
@@ -141,36 +156,79 @@ local function factions()
 	if C_Reputation and C_Reputation.GetNumFactions and C_Reputation.GetFactionDataByIndex then
 		for i = 1, num(call(C_Reputation.GetNumFactions)) or 0 do
 			local d = call(C_Reputation.GetFactionDataByIndex, i)
-			if type(d) == "table" and type(d.name) == "string" and (not d.isHeader or d.isHeaderWithRep) then
-				out[#out + 1] = { name = d.name, id = d.factionID, index = i, watched = d.isWatched }
+			if type(d) == "table" and type(d.name) == "string" and not ns.IsSecret(d.name) and (not d.isHeader or d.isHeaderWithRep) then
+				out[#out + 1] = { name = d.name, id = d.factionID, index = i, watched = d.isWatched, value = num(d.currentStanding) }
 			end
 		end
 	elseif GetNumFactions and GetFactionInfo then
 		for i = 1, num(call(GetNumFactions)) or 0 do
-			local name, _, _, _, _, _, _, _, isHeader, _, hasRep, isWatched, _, id = call(GetFactionInfo, i)
-			if type(name) == "string" and (not isHeader or hasRep) then
-				out[#out + 1] = { name = name, id = id, index = i, watched = isWatched }
+			local name, _, _, _, _, value, _, _, isHeader, _, hasRep, isWatched, _, id = call(GetFactionInfo, i)
+			if type(name) == "string" and not ns.IsSecret(name) and (not isHeader or hasRep) then
+				out[#out + 1] = { name = name, id = id, index = i, watched = isWatched, value = num(value) }
 			end
 		end
 	end
 	return out
 end
 
-local function follow(msg)
-	if not ns.db or not ns.db.autoRep then return end
-	if type(msg) ~= "string" or ns.IsSecret(msg) then return end
-	local best
-	for _, f in ipairs(factions()) do
-		if msg:find(f.name, 1, true) and (not best or #f.name > #best.name) then best = f end
-	end
-	if not best or best.watched then return end
-	if C_Reputation and C_Reputation.SetWatchedFactionByID and best.id then
-		pcall(C_Reputation.SetWatchedFactionByID, best.id)
+local function watch(f)
+	if not ns.db or not ns.db.autoRep or f.watched then return end
+	if C_Reputation and C_Reputation.SetWatchedFactionByID and f.id then
+		pcall(C_Reputation.SetWatchedFactionByID, f.id)
 	elseif C_Reputation and C_Reputation.SetWatchedFactionByIndex then
-		pcall(C_Reputation.SetWatchedFactionByIndex, best.index)
+		pcall(C_Reputation.SetWatchedFactionByIndex, f.index)
 	elseif SetWatchedFactionIndex then
-		pcall(SetWatchedFactionIndex, best.index)
+		pcall(SetWatchedFactionIndex, f.index)
 	end
+end
+
+local function scanReps(msg)
+	local list = factions()
+	local best, gain
+	if standings then
+		for _, f in ipairs(list) do
+			local old = standings[f.name]
+			if f.value and old and f.value > old then
+				local r = s.reps[f.name]
+				if not r then
+					r = { first = old, start = s.start, gained = 0, last = old }
+					s.reps[f.name] = r
+				end
+				if f.value > r.last then
+					r.gained = r.gained + (f.value - r.last)
+					r.last = f.value
+				end
+				if not gain or f.value - old > gain then best, gain = f, f.value - old end
+			end
+		end
+	end
+	standings = standings or {}
+	for _, f in ipairs(list) do
+		if f.value then standings[f.name] = f.value end
+	end
+	if not best and type(msg) == "string" and not ns.IsSecret(msg) then
+		for _, f in ipairs(list) do
+			if msg:find(f.name, 1, true) and (not best or #f.name > #best.name) then best = f end
+		end
+	end
+	if best then watch(best) end
+end
+Track.ScanReps = scanReps
+
+function Track.Share()
+	local info = Track.XP()
+	local parts = {}
+	if info.known and not info.capped then
+		parts[#parts + 1] = string.format("Level %s: %s / %s XP (%d%%), %s to go", tostring(info.level or "?"), ACore.Short(info.xp), ACore.Short(info.max),
+			math.floor(info.xp / info.max * 100), ACore.Short(info.max - info.xp))
+		if info.rested > 0 then parts[#parts + 1] = "rested " .. math.floor(info.rested / info.max * 100 + 0.5) .. "%" end
+	end
+	local w = watched()
+	if w then
+		local span = w.hi - w.lo
+		parts[#parts + 1] = w.name .. (span > 0 and (": " .. (w.value - w.lo) .. " / " .. span) or "")
+	end
+	return table.concat(parts, ", ")
 end
 
 function Track.Summary()
@@ -199,7 +257,10 @@ function Track.Reset()
 	ns:Fire("CHANGED")
 end
 
-ns:Listen("LOGIN", function() Track.Reset() end)
+ns:Listen("LOGIN", function()
+	Track.Reset()
+	scanReps()
+end)
 
 ns:On("PLAYER_XP_UPDATE", xpChanged)
 ns:On("UPDATE_EXHAUSTION", function() ns:Fire("CHANGED") end)
@@ -219,15 +280,29 @@ ns:On("PLAYER_LEVEL_UP", function(level)
 end)
 
 ns:On("CHAT_MSG_COMBAT_XP_GAIN", function(msg)
-	if type(msg) ~= "string" or ns.IsSecret(msg) then return end
+	local t = now()
+	if type(msg) ~= "string" or ns.IsSecret(msg) then
+		s.kills = s.kills + 1
+		if looseXP and t - looseAt <= 2 then
+			push(s.killXP, looseXP, 12)
+		else
+			killAt = t
+		end
+		looseXP = nil
+		ns:Fire("CHANGED")
+		return
+	end
 	local amount = tonumber((msg:gsub("[,%.](%d%d%d)", "%1"):match("(%d+)")))
 	if not amount or amount <= 0 then return end
 	s.kills = s.kills + 1
+	looseXP = nil
 	push(s.killXP, amount, 12)
 	ns:Fire("CHANGED")
 end)
 
 ns:On("QUEST_TURNED_IN", function(_, xp)
+	questAt = now()
+	looseXP = nil
 	xp = num(xp)
 	if xp and xp > 0 then push(s.questXP, xp, 6) end
 end)
@@ -242,8 +317,13 @@ ns:On("PLAYER_MONEY", function()
 	lastMoney = money
 end)
 
-ns:On("UPDATE_FACTION", function() ns:Fire("CHANGED") end)
+ns:On("UPDATE_FACTION", function()
+	ns.Debounce("reps", 0.2, function()
+		scanReps()
+		ns:Fire("CHANGED")
+	end)
+end)
 ns:On("CHAT_MSG_COMBAT_FACTION_CHANGE", function(msg)
-	follow(msg)
+	scanReps(msg)
 	ns:Fire("CHANGED")
 end)

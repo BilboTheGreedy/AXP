@@ -41,9 +41,28 @@ local function tooltip(self)
 	for _, line in ipairs(Track.Summary()) do
 		GameTooltip:AddDoubleLine(line[1], line[2], 0.58, 0.6, 0.65, 0.9, 0.9, 0.92)
 	end
-	GameTooltip:AddLine("Right-click for options, drag to move", 0.58, 0.6, 0.65)
+	GameTooltip:AddLine("Right-click for options, drag to move, shift-click to share", 0.58, 0.6, 0.65)
 	GameTooltip:Show()
 end
+
+local function fade(bar)
+	local a = (not ns.db.hover or bar.over) and 1 or 0
+	bar.left:SetAlpha(a)
+	bar.right:SetAlpha(a)
+end
+
+local function share()
+	local text = Track.Share()
+	if text == "" then return end
+	local insert = (ChatFrameUtil and ChatFrameUtil.InsertLink) or ChatEdit_InsertLink
+	if insert then
+		local ok, done = pcall(insert, text)
+		if ok and done then return end
+	end
+	local open = (ChatFrameUtil and ChatFrameUtil.OpenChat) or ChatFrame_OpenChat
+	if open then pcall(open, text) end
+end
+Bars.Share = share
 
 local function makeBar(parent)
 	local bar = UI.Bar(parent, 14)
@@ -55,12 +74,45 @@ local function makeBar(parent)
 	bar:RegisterForDrag("LeftButton")
 	bar:SetScript("OnDragStart", function() frame:StartDrag() end)
 	bar:SetScript("OnDragStop", function() frame:StopDrag() end)
-	bar:SetScript("OnEnter", tooltip)
-	bar:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	bar.ticks = {}
+	bar:SetScript("OnEnter", function(self)
+		self.over = true
+		fade(self)
+		tooltip(self)
+	end)
+	bar:SetScript("OnLeave", function(self)
+		self.over = false
+		fade(self)
+		GameTooltip:Hide()
+	end)
 	bar:SetScript("OnMouseUp", function(self, button)
-		if button == "RightButton" then Bars.Menu(self) end
+		if button == "RightButton" then
+			Bars.Menu(self)
+		elseif IsShiftKeyDown and IsShiftKeyDown() then
+			share()
+		end
 	end)
 	return bar
+end
+
+local function ticks(bar, width, on)
+	for i = 1, 9 do
+		local t = bar.ticks[i]
+		if on and not t then
+			t = bar:CreateTexture(nil, "OVERLAY")
+			t:SetColorTexture(0, 0, 0, 0.45)
+			t:SetWidth(1)
+			bar.ticks[i] = t
+		end
+		if t then
+			if on then
+				t:ClearAllPoints()
+				t:SetPoint("TOPLEFT", bar, "TOPLEFT", width * i / 10, 0)
+				t:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", width * i / 10, 0)
+			end
+			t:SetShown(on and true or false)
+		end
+	end
 end
 
 local function build()
@@ -121,10 +173,10 @@ local function updateXP(bar, width)
 		bar.left:SetText("")
 		bar.right:SetText("")
 	elseif mode == "percent" then
-		bar.left:SetText("Level " .. info.level)
+		bar.left:SetText("Level " .. (info.level or "?"))
 		bar.right:SetText(pct .. "%")
 	else
-		bar.left:SetText("Level " .. info.level .. "   " .. ACore.Short(info.xp) .. " / " .. ACore.Short(info.max) .. "   " .. pct .. "%")
+		bar.left:SetText("Level " .. (info.level or "?") .. "   " .. ACore.Short(info.xp) .. " / " .. ACore.Short(info.max) .. "   " .. pct .. "%")
 		if e.rate > 0 then
 			bar.right:SetText(ACore.Short(e.rate) .. "/h   " .. ns.Time(e.seconds))
 		elseif resting then
@@ -160,8 +212,39 @@ local function updateRep(bar, rep)
 	end
 end
 
-local BLIZZARD = { "MainMenuExpBar", "ReputationWatchBar", "MainStatusTrackingBarContainer", "StatusTrackingBarManager" }
+local BLIZZARD = {
+	"MainStatusTrackingBarContainer", "SecondaryStatusTrackingBarContainer", "StatusTrackingBarManager",
+	"MainMenuExpBar", "ReputationWatchBar", "MainMenuBarMaxLevelBar",
+}
 local hidden = false
+local hooked, mouse = {}, {}
+
+local function locked(f)
+	return InCombatLockdown and InCombatLockdown() and f.IsProtected and f:IsProtected() and true or false
+end
+
+local function quiet(f, want)
+	if locked(f) then return end
+	pcall(f.SetAlpha, f, want and 0 or 1)
+	local list = { f }
+	if f.GetChildren then
+		for _, child in ipairs({ f:GetChildren() }) do list[#list + 1] = child end
+	end
+	for _, fr in ipairs(list) do
+		if type(fr) == "table" and fr.EnableMouse and fr.IsMouseEnabled and not locked(fr) then
+			if want then
+				if mouse[fr] == nil then
+					local ok, on = pcall(fr.IsMouseEnabled, fr)
+					mouse[fr] = ok and on and true or false
+				end
+				if mouse[fr] then pcall(fr.EnableMouse, fr, false) end
+			elseif mouse[fr] ~= nil then
+				if mouse[fr] then pcall(fr.EnableMouse, fr, true) end
+				mouse[fr] = nil
+			end
+		end
+	end
+end
 
 local function blizzard()
 	local want = ns.db.hideDefault and true or false
@@ -169,9 +252,17 @@ local function blizzard()
 	hidden = want
 	for _, name in ipairs(BLIZZARD) do
 		local f = _G[name]
-		if f and f.SetAlpha then
-			pcall(f.SetAlpha, f, want and 0 or 1)
-			if f.EnableMouse then pcall(f.EnableMouse, f, not want) end
+		if type(f) == "table" and f.SetAlpha then
+			quiet(f, want)
+			if want and not hooked[f] and hooksecurefunc then
+				hooked[f] = true
+				pcall(hooksecurefunc, f, "SetAlpha", function(self, a)
+					if hidden and a ~= 0 then quiet(self, true) end
+				end)
+				pcall(hooksecurefunc, f, "Show", function(self)
+					if hidden then quiet(self, true) end
+				end)
+			end
 		end
 	end
 end
@@ -188,12 +279,14 @@ function Bars.Refresh()
 	for _, bar in ipairs({ frame.xp, frame.rep }) do
 		bar:SetHeight(db.height)
 		font(bar, db.height)
+		fade(bar)
 	end
 	if showXP then
 		frame.xp:ClearAllPoints()
 		frame.xp:SetPoint("TOPLEFT", 0, 0)
 		frame.xp:SetPoint("TOPRIGHT", 0, 0)
 		updateXP(frame.xp, db.width)
+		ticks(frame.xp, db.width, db.ticks)
 		frame.xp:Show()
 		y = y + db.height + 2
 	else
